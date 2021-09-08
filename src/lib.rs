@@ -1,3 +1,5 @@
+use std::env;
+
 /// Represents a configuration key.
 trait Key {
   /// Returns the name of the configuration key.
@@ -39,6 +41,17 @@ impl<'a, K: Key> ConfigurationSource<&'a K> for &'a Hardcoded<K> {
   }
 }
 
+impl<K: Key + Clone> ConfigurationSource<K> for Hardcoded<K> {
+  type Output = K;
+  fn get(&self) -> Self::Output {
+    self.value.clone()
+  }
+
+  fn describe(&self) -> String {
+    String::from("built-in application default")
+  }
+}
+
 struct Envvar {
   application_name: String,
 }
@@ -54,7 +67,6 @@ impl Envvar {
   }
 }
 
-use std::env;
 use std::env::VarError;
 
 impl<K: Key + From<String>> ConfigurationSource<K> for Envvar {
@@ -70,7 +82,7 @@ impl<K: Key + From<String>> ConfigurationSource<K> for Envvar {
 }
 
 // app configuration
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 enum SplineReticulationAlgorithm {
   Old,
   New,
@@ -92,7 +104,7 @@ mod tests {
   #[test]
   fn it() {
     let sra_hardcoded = &Hardcoded { value: SplineReticulationAlgorithm::Old };
-    let strategy = &sra_hardcoded;
+    let strategy = (sra_hardcoded as &dyn ConfigurationSource<SplineReticulationAlgorithm, Output=SplineReticulationAlgorithm>);
     let sra = strategy.get();
     eprintln!("oh goodie, will use {}: {:?}", strategy.describe(), sra);
 
@@ -100,11 +112,5 @@ mod tests {
     let strategy = (sra_envvar as &dyn ConfigurationSource<SplineReticulationAlgorithm, Output=Result<_, _>>);
     let sra = strategy.get();
     eprintln!("oh goodie, will use {}: {:?}", strategy.describe(), sra);
-
-    // We will iterate through the references to the element returned by
-    // env::vars();
-    for (key, value) in env::vars() {
-      eprintln!("{}: {}", key, value);
-    }
   }
 }
