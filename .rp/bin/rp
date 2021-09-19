@@ -1,0 +1,207 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source ~/github/home/utils.bash
+
+flag_help=no
+flag_trace=no
+flag_skip_build=no
+opt_envvars=(--env RP=yes)
+
+argv=()
+while [ $# -ne 0 ]
+do
+  case "$1" in
+    --skip-build) #HELP: (flag) Do not rebuild the environment, even if dependencies have changed.
+      shift
+      flag_skip_build=yes
+      ;;
+
+    --env | -e) #HELP: (option*) Define an environment variable within the environment.
+      shift
+      opt_envvars+=(--env "$1")
+      shift
+      ;;
+
+    -h | --help) #HELP: (flag) Show this help and exit.
+      shift
+      flag_help=yes
+      ;;
+
+    -x) #HELP: (flag) Enable debug tracing.
+      shift
+      flag_trace=yes
+      ;;
+
+    --) #HELP: (flag) Halt option processing.
+      shift
+      argv+=("$@")
+      break
+      ;;
+
+    -* | --*)
+      bail 1 "Received unknown option '$1'."
+      ;;
+
+    *)
+      argv+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ "$flag_trace" = yes ]
+then
+  set -x
+fi
+
+if [ "$flag_help" = yes ]
+then
+  showhelp '[ OPTIONS ]' '[ ARGS ... ]'
+  exit 1
+fi
+
+case ${#argv[@]} in
+  0 | 1)
+    bail 1 "Not enough arguments."
+    ;;
+esac
+
+env="${argv[0]}"
+argv=("${argv[@]:1}")
+
+subcmd="${argv[0]}"
+argv=("${argv[@]:1}")
+
+env_dir=.rp/env/"$env"
+
+dockerfile="$env_dir"/Dockerfile
+container_image_tag="$PROJECT_NAME:$env"
+workdir="/opt/$PROJECT_NAME"
+
+sqlite3 -bail .rp/db <<EOF
+CREATE TABLE IF NOT EXISTS "deps" (
+  path TEXT PRIMARY KEY
+, env TEXT NOT NULL
+, mtime INTEGER NOT NULL
+);
+EOF
+
+record_dependencies () {
+  sqlite3 -bail .rp/db <<EOF
+  DELETE FROM "deps" WHERE "env" = '$env';
+EOF
+
+  while IFS= read -r 
+  do
+    mtime=$(stat -c %Y "$REPLY")
+    sqlite3 -bail .rp/db <<EOF
+    INSERT OR REPLACE INTO "deps" ("path", "env", "mtime")
+    VALUES ('$REPLY', '$env', $mtime);
+EOF
+  done < <(find "$env_dir" -type f)
+}
+
+check_dependencies () {
+  sqlite3 -bail .rp/db <<EOF
+  DROP TABLE IF EXISTS deps_tmp;
+  CREATE TABLE "deps_tmp" (
+    path TEXT PRIMARY KEY
+  , new_mtime INTEGER NOT NULL
+  );
+EOF
+
+  while IFS= read -r 
+  do
+    mtime=$(stat -c %Y "$REPLY")
+    sqlite3 -bail .rp/db <<EOF
+    INSERT OR REPLACE INTO "deps_tmp" ("path", "new_mtime")
+    VALUES ('$REPLY', $mtime);
+EOF
+  done < <(find "$env_dir" -type f)
+
+  file_count_changed=$(mktemp)
+  trap 'rm -f "$file_count_changed"' RETURN
+
+  sqlite3 -bail .rp/db >"$file_count_changed" <<EOF
+  WITH state AS (
+    SELECT
+      path
+    , mtime
+    , new_mtime
+    FROM deps LEFT JOIN deps_tmp USING(path)
+    WHERE "env" = '$env'
+    UNION ALL
+    SELECT
+      path
+    , mtime
+    , new_mtime
+    FROM deps_tmp LEFT JOIN deps USING(path)
+    WHERE mtime IS NULL
+  ),
+  status AS (
+    SELECT
+      path
+    , CASE
+      WHEN new_mtime IS NOT NULL AND mtime IS NULL
+        THEN 'created'
+      WHEN new_mtime IS NULL AND mtime IS NOT NULL
+        THEN 'deleted'
+      WHEN new_mtime != mtime
+        THEN 'updated'
+      ELSE 'not-changed'
+      END AS "status"
+    FROM "state"
+  )
+  SELECT * FROM status WHERE status != 'not-changed'
+  ;
+EOF
+
+  if [ "$(wc -l <$file_count_changed)" -ne 0 ]
+  then
+    cat "$file_count_changed"
+    return 0
+  else
+    return 1
+  fi
+}
+
+case "$subcmd" in
+  run)
+    # ensure the docker container is up to date
+
+    if [ "${flag_skip_build}" = no ] && check_dependencies
+    then
+      docker build \
+        --build-arg "UID=$(id -u)" \
+        --build-arg "GID=$(id -g)" \
+        --build-arg "USER=$(whoami)" \
+        --build-arg "WORKDIR=$workdir" \
+        -t "$container_image_tag" \
+        -f "$dockerfile" \
+        "$env_dir"
+
+      record_dependencies
+    fi
+
+    # run the command
+    # TODO handle if terminal is attached or not, tty -s
+    docker run \
+      --rm -it \
+      --log-driver none \
+      --user "$(id -u):$(id -g)" \
+      --workdir "$workdir" \
+      "${opt_envvars[@]}" \
+      --init \
+      -v "$(pwd):$workdir" "$container_image_tag" \
+      "${argv[@]}"
+    ;;
+
+  edit)
+    $EDITOR "$dockerfile"
+    ;;
+
+  *)
+    bail 1 "Unknown operation '$subcmd'."
+    ;;
+esac
+
