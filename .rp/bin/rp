@@ -5,6 +5,7 @@ source ~/github/home/utils.bash
 flag_help=no
 flag_trace=no
 flag_skip_build=no
+flag_force_build=no
 opt_envvars=(--env RP=yes)
 
 argv=()
@@ -14,6 +15,13 @@ do
     --skip-build) #HELP: (flag) Do not rebuild the environment, even if dependencies have changed.
       shift
       flag_skip_build=yes
+      flag_force_build=no
+      ;;
+
+    --force-build) #HELP: (flag) Rebuild the environment, even if dependencies have not changed.
+      shift
+      flag_force_build=yes
+      flag_skip_build=no
       ;;
 
     --env | -e) #HELP: (option*) Define an environment variable within the environment.
@@ -165,22 +173,33 @@ EOF
   fi
 }
 
+build () {
+  docker build \
+    --build-arg "UID=$(id -u)" \
+    --build-arg "GID=$(id -g)" \
+    --build-arg "USER=$(whoami)" \
+    --build-arg "WORKDIR=$workdir" \
+    -t "$container_image_tag" \
+    -f "$dockerfile" \
+    "$@" \
+    "$env_dir"
+
+  record_dependencies
+}
+
 case "$subcmd" in
   run)
     # ensure the docker container is up to date
 
-    if [ "${flag_skip_build}" = no ] && check_dependencies
+    if [ "${flag_force_build}" = yes ]
     then
-      docker build \
-        --build-arg "UID=$(id -u)" \
-        --build-arg "GID=$(id -g)" \
-        --build-arg "USER=$(whoami)" \
-        --build-arg "WORKDIR=$workdir" \
-        -t "$container_image_tag" \
-        -f "$dockerfile" \
-        "$env_dir"
-
-      record_dependencies
+      build --no-cache
+    elif [ "${flag_skip_build}" = yes ]
+    then
+      : # skip the build
+    elif check_dependencies
+    then
+      build
     fi
 
     # run the command

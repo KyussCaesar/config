@@ -12,3 +12,18 @@ Need to have Docker installed/running.
 
 `make test` to run tests.
 
+# Usage
+
+1. Describe your configuration:
+
+```rust
+struct Configuration {
+  spline_reticulation_algortithm: String,
+}
+```
+
+2. Describe configuration sources:
+
+```rust
+```
+

@@ -1,6 +1,9 @@
 use std::env;
 use std::ffi::OsString;
 
+use convert_case::Casing;
+use convert_case::Case::Pascal;
+
 /// Represents the ways in which environment variable discovery can fail.
 #[derive(Debug)]
 pub enum Result {
@@ -35,9 +38,33 @@ impl Environment {
         Success {
           vars: vars, others: others }}}
   }
+
+  pub fn lookup(&self, name: &str) -> Option<String> {
+    use self::Result::*;
+    let s = format!("{}_{}", self.prefix, name);
+    match &self.result {
+      Success { vars, others } => {
+        for (k,v) in vars.iter() {
+          if k == &s {
+            return Some(v.clone())}}}}
+
+    None
+  }
 }
 
 pub fn new(prefix: &str) -> Environment {
   Environment::new(prefix)
+}
+
+impl ConfigurationValueSource for Environment {
+  fn try_get<'c, 's: 'c>(&'s self, ci: &'c mut dyn ConfigurationItem) -> Option<Box<dyn Error>> {
+    let ci_name = ci.get_name();
+    let envvar = ci_name.to_case(UpperSnake);
+    if let Some(s) = self.lookup(envvar) {
+      return ci.try_value(s);
+    } else {
+      return Some("envvar not found in environment");
+    }
+  }
 }
 
