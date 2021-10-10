@@ -1,6 +1,9 @@
 //! Represents a source of configuration values.
 
+use std::any::Any;
 use std::error::Error;
+use std::ops::Deref;
+use std::ops::DerefMut;
 use std::sync::RwLock;
 use std::sync::RwLockWriteGuard;
 
@@ -20,7 +23,13 @@ pub trait ConfigurationItem {
   fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>>;
 }
 
-impl<'b> ConfigurationItem for RwLockWriteGuard<'_, &mut (dyn ConfigurationItem + 'b)> {}
+impl<'b> ConfigurationItem for RwLockWriteGuard<'_, &mut (dyn ConfigurationItem + 'b)> {
+  fn get_name(&self) -> &str { self.deref().get_name() }
+
+  fn get_group(&self) -> Option<&str> { self.deref().get_group() }
+
+  fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>> { self.deref_mut().try_value(value) }
+}
 
 #[auto_impl(&)]
 pub trait ConfigurationValueSource {

@@ -16,3 +16,9 @@ version = "0.5.9"
 [dependencies.auto_impl]
 version = "0.4.1"
 
+[dependencies.thiserror]
+version = "1.0.30"
+
+[dependencies.convert_case]
+version = "0.4.0"
+
