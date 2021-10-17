@@ -1,140 +1,182 @@
-
-pub mod file;
 pub mod environment;
-pub mod cli;
-pub mod configuration_source;
+// pub mod file;
+// pub mod cli;
 
-/*[[[cog
-import cog
-from caseconverter import pascalcase, kebabcase, snakecase, macrocase
+use std::any::Any;
+use std::error::Error;
+use std::ops::Deref;
+use std::ops::DerefMut;
+use std::sync::RwLock;
+use std::sync::RwLockWriteGuard;
 
-kind = "u32"
-name = "num_iterations"
-name_type = pascalcase(name)
-name_cli = f"--{kebabcase(name)}"
-name_envvar = macrocase(name)
-description = "the number of iterations to perform."
-default_value = "42"
+use auto_impl::auto_impl;
+use derive_new::new;
 
-envvar_app_name = "MYAPP"
+// #[derive(thiserror::Error)]
+// struct TypeError;
 
-cog.out(f"""
-pub mod Configuration {{
-  pub struct Config {{
-    {name}: {kind}
-  }}
+macro_rules! item {
+  ($name:ident, $type:ty) => {
+    struct $name(Option<$type>);
 
-  struct CLIRecv {{
-    {name}: Receiver<Option<String>>,
-  }}
+    impl ConfigurationItem for $name {
+      fn get_name(&self) -> &str {
+        stringify!($name)
+      }
 
-  pub struct Initialise {{
-    pub cli: CLI,
-    cli_recv: CLIRecv,
-    environment: Environment,
-  }}
+      fn get_group() -> Option<&str> {
+        None
+      }
 
-  impl Initialise {{
-    pub fn new() -> Self {{
-      let mut cli = cli::new();
-      let mut cli_recv = CLIRecv {{
-        {name}: cli.opt("{name_cli}", "{description}"),
-      }};
+      fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>> {
+        if let Some(x) = value.downcast_ref::<$type>() {
+          self.0 = Some(x.clone());
+          return None;
+        }
 
-      Self {{
-        cli: cli,
-        cli_recv: cli_recv,
-        environment: Environment::new("{envvar_app_name}"),
-      }}
-    }}
+        if let Some(x) = value.downcast_ref::<String>() && impls!($type: TryFrom<String>) {
+          match $type::try_from(x) {
+            Ok(val) => {
+              self.0 = Some(val);
+              return None;
+            }
+            Err(e) => return Some(Box::new(e));
+          }
+        }
+      }
+    }
+  }
+}
 
-    pub fn load(&self) -> Config {{
-      self.cli.args(...);
-      Config {{
-        {name}: self.load_{name}(),
-      }}
-    }}
+/// Represents an item in your configuration.
+pub trait ConfigurationItem {
+  /// Return the name of the configuration item in `PascalCase`.
+  fn get_name(&self) -> &str;
 
-    fn load_{name}(&self) -> {kind} {{
-      if let Ok(Some({name})) = self.cli_recv.{name}.try_recv().unwrap() {{
-        return {name};
-      }}
+  /// Return the "group" for the configuration item.
+  fn get_group(&self) -> Option<&str>;
 
-      if let Ok(Some({name})) = self.environment.lookup("{name_envvar}") {{
-        return {name};
-      }}
+  /// Try to use the provided value.
+  /// Should return `None` if the value is ok to use, otherwise return an `Error`
+  /// explaining why it's not usable.
+  fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>>;
+}
 
-      return {default_value};
-    }}
-  }}
-}}
-""")
-]]]*/
+impl<'b> ConfigurationItem for RwLockWriteGuard<'_, &mut (dyn ConfigurationItem + 'b)> {
+  fn get_name(&self) -> &str { self.deref().get_name() }
 
-// pub mod Configuration {
-//   pub struct Config {
-//     num_iterations: u32
-//   }
+  fn get_group(&self) -> Option<&str> { self.deref().get_group() }
 
-//   struct CLIRecv {
-//     num_iterations: Receiver<Option<String>>,
-//   }
+  fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>> { self.deref_mut().try_value(value) }
+}
 
-//   pub struct Initialise {
-//     pub cli: CLI,
-//     cli_recv: CLIRecv,
-//     environment: Environment,
-//   }
+#[auto_impl(&)]
+pub trait ConfigurationValueSource {
+  /// Attempt to retrieve a value for the specified configuration item from this source.
+  fn try_get<'c, 's: 'c>(&'s self, ci: &'c mut dyn ConfigurationItem) -> Option<Box<dyn Error>>;
+}
 
-//   impl Initialise {
-//     pub fn new() -> Self {
-//       let mut cli = cli::new();
-//       let mut cli_recv = CLIRecv {
-//         num_iterations: cli.opt("--num-iterations", "the number of iterations to perform."),
-//       };
+/// Represents an attempt to get a `T` from the `ConfigurationValueSource`.
+#[derive(new)]
+pub struct Attempt<'b> {
+  // the source we tried to get the value from
+  source: &'b dyn ConfigurationValueSource,
 
-//       Self {
-//         cli: cli,
-//         cli_recv: cli_recv,
-//         environment: Environment::new("MYAPP"),
-//       }
-//     }
+  // if the attempt failed, what was the error?
+  error: Option<Box<dyn Error>>,
+}
 
-//     pub fn load(&self) -> Config {
-//       self.cli.args(...);
-//       Config {
-//         num_iterations: self.load_num_iterations(),
-//       }
-//     }
+impl<'a> Attempt<'a> {
+  pub fn is_ok(&self) -> bool {
+    self.error.is_some()
+  }
+}
 
-//     fn load_num_iterations(&self) -> u32 {
-//       if let Ok(Some(num_iterations)) = self.cli_recv.num_iterations.try_recv().unwrap() {
-//         return num_iterations;
-//       }
+/// Represents a series of attempts to get a `T` from various `ConfigurationValueSource`s.
+#[derive(new)]
+pub struct Attempts<'a, 'b> {
+  // the item we tried to get the value for
+  item: &'a dyn ConfigurationItem,
 
-//       if let Ok(Some(num_iterations)) = self.environment.lookup("NUM_ITERATIONS") {
-//         return num_iterations;
-//       }
+  // the attempts
+  attempts: Vec<Attempt<'b>>,
+}
 
-//       return 42;
-//     }
-//   }
-// }
-//[[[end]]]
+impl<'a, 'b> Attempts<'a, 'b> {
+  pub fn push(&mut self, a: Attempt<'b>) -> &mut Self {
+    self.attempts.push(a);
+    self
+  }
+
+  // TODO: some kinda "print_report" or something
+}
+
+/// Collection of sources to attempt to load values from.
+#[derive(new)]
+pub struct ConfigurationStrategy<'a> {
+  sources: Vec<&'a dyn ConfigurationValueSource>,
+}
+
+impl<'a> ConfigurationStrategy<'a> {
+  /// Try to get a value for the specified `ConfigurationItem` using this strategy.
+  pub fn try_get<'b>(&'a self, ci: &'b mut dyn ConfigurationItem) -> Attempts<'b, 'a> {
+    let mut attempts = Vec::with_capacity(self.sources.len());
+
+    // so that we can pass a "temporary" mutable reference to source.try_get
+    let lock = RwLock::new(ci);
+
+    for source in self.sources.iter() {
+      let result = {
+        let mut guard = lock.write().unwrap();
+        source.try_get(&mut guard)
+      };
+      let attempt = Attempt::new(source, result);
+      let stop = attempt.is_ok();
+      attempts.push(attempt);
+
+      if stop {
+        break;
+      }
+    }
+
+    return Attempts::new(lock.into_inner().unwrap(), attempts);
+  }
+}
 
 #[cfg(test)]
 mod test {
   use super::*;
 
-  // fn main() {
-  //   let init = 
-  // }
+  struct TestConfigurationItem {
+    value: Option<String>,
+  }
 
-  // #[test]
-  // fn it() {
-  //   let cli = cli::new();
-  //   let env = environment::new("APPNAME");
-  //   let fil = file::new("config.txt");
-  // }
+  impl ConfigurationItem for TestConfigurationItem {
+    fn get_name(&self) -> &str {
+      "TestConfigurationItem"
+    }
+
+    fn get_group(&self) -> Option<&str> {
+      None
+    }
+
+    fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn std::error::Error>> {
+      if let Some(x) = value.downcast_ref::<String>() {
+        self.value = Some(x.clone());
+      }
+
+      None
+    }
+  }
+
+  #[test]
+  fn it() {
+    let env = crate::environment::Environment::new("APPNAME".into(), vec![("APPNAME_TEST_CONFIGURATION_ITEM".into(), Ok("test_value".into()))]);
+    let sources: Vec<&dyn ConfigurationValueSource> = vec![&env];
+    let strategy = ConfigurationStrategy::new(sources);
+    let mut ci = TestConfigurationItem { value: None };
+    let res = strategy.try_get(&mut ci);
+    assert_eq!(ci.value, Some("test_value".into()));
+  }
 }
 

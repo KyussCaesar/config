@@ -1,4 +1,4 @@
 .PHONY: test
 
 test:
-	rp -- build run cargo test -- --nocapture
+	rp $(RPARGS) -- build run cargo test -- --nocapture

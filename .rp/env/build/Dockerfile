@@ -18,3 +18,5 @@ COPY sysadmin.sh .
 RUN ./sysadmin.sh
 USER $USER
 
+ENV CARGO_HOME=$WORKDIR/.cargo
+
