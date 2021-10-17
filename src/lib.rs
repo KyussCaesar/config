@@ -8,23 +8,32 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::RwLock;
 use std::sync::RwLockWriteGuard;
+use std::convert::TryFrom;
 
 use auto_impl::auto_impl;
 use derive_new::new;
+use impls::impls;
 
 // #[derive(thiserror::Error)]
 // struct TypeError;
 
-macro_rules! item {
+macro_rules! config {
   ($name:ident, $type:ty) => {
-    struct $name(Option<$type>);
+    #[derive(new)]
+    pub struct $name(Option<$type>);
+
+    impl $name {
+      pub fn get(&self) -> Option<&$type> {
+        self.0.as_ref()
+      }
+    }
 
     impl ConfigurationItem for $name {
       fn get_name(&self) -> &str {
         stringify!($name)
       }
 
-      fn get_group() -> Option<&str> {
+      fn get_group(&self) -> Option<&str> {
         None
       }
 
@@ -34,17 +43,24 @@ macro_rules! item {
           return None;
         }
 
-        if let Some(x) = value.downcast_ref::<String>() && impls!($type: TryFrom<String>) {
-          match $type::try_from(x) {
-            Ok(val) => {
-              self.0 = Some(val);
-              return None;
+        if let Some(x) = value.downcast_ref::<String>() {
+          if impls!($type: TryFrom<String>) {
+            match <$type>::try_from(x) {
+              Ok(val) => {
+                self.0 = Some(val);
+                return None;
+              }
+              Err(e) => return Some(Box::new(e)),
             }
-            Err(e) => return Some(Box::new(e));
           }
         }
+
+        None
       }
     }
+  };
+  ($(($name:ident $type:ty)),*) => {
+    $(config!($name, $type);),*
   }
 }
 
@@ -147,36 +163,40 @@ impl<'a> ConfigurationStrategy<'a> {
 mod test {
   use super::*;
 
-  struct TestConfigurationItem {
-    value: Option<String>,
-  }
+  config!(
+    (TestConfigurationItem String)
+  );
 
-  impl ConfigurationItem for TestConfigurationItem {
-    fn get_name(&self) -> &str {
-      "TestConfigurationItem"
-    }
+  // struct TestConfigurationItem {
+  //   value: Option<String>,
+  // }
 
-    fn get_group(&self) -> Option<&str> {
-      None
-    }
+  // impl ConfigurationItem for TestConfigurationItem {
+  //   fn get_name(&self) -> &str {
+  //     "TestConfigurationItem"
+  //   }
 
-    fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn std::error::Error>> {
-      if let Some(x) = value.downcast_ref::<String>() {
-        self.value = Some(x.clone());
-      }
+  //   fn get_group(&self) -> Option<&str> {
+  //     None
+  //   }
 
-      None
-    }
-  }
+  //   fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn std::error::Error>> {
+  //     if let Some(x) = value.downcast_ref::<String>() {
+  //       self.value = Some(x.clone());
+  //     }
+
+  //     None
+  //   }
+  // }
 
   #[test]
   fn it() {
     let env = crate::environment::Environment::new("APPNAME".into(), vec![("APPNAME_TEST_CONFIGURATION_ITEM".into(), Ok("test_value".into()))]);
     let sources: Vec<&dyn ConfigurationValueSource> = vec![&env];
     let strategy = ConfigurationStrategy::new(sources);
-    let mut ci = TestConfigurationItem { value: None };
+    let mut ci = TestConfigurationItem::new(None);
     let res = strategy.try_get(&mut ci);
-    assert_eq!(ci.value, Some("test_value".into()));
+    assert_eq!(ci.get(), Some(&String::from("test_value")));
   }
 }
 
