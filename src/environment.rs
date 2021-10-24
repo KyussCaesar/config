@@ -1,6 +1,7 @@
 use std::env;
 use std::ffi::OsString;
 use std::any::Any;
+use std::ops::Deref;
 
 use convert_case::Casing;
 use convert_case::Case::UpperSnake;
@@ -70,8 +71,8 @@ impl ConfigurationValueSource for Environment {
         name: ci_name,
         envvar: envvar,
       })),
-      Some(s) => match s {
-        Ok(s) => match ci.try_value(s) {
+      Some(r) => match r {
+        &Ok(ref s) => match ci.try_value(&Box::new(s.clone())) {
           Some(e) => Some(Box::new(ValueNotAccepted {
             name: ci_name.clone(),
             envvar: envvar,
@@ -80,7 +81,7 @@ impl ConfigurationValueSource for Environment {
           })),
           None => None,
         },
-        Err(s) => match ci.try_value(s) {
+        &Err(ref s) => match ci.try_value(&Box::new(s.clone())) {
           Some(e) => Some(Box::new(ValueNotAccepted {
             name: ci_name.clone(),
             envvar: envvar,
@@ -118,35 +119,46 @@ mod test {
     assert_eq!(val, "test_value");
   }
 
-  struct TestConfigurationItem {
-    value: Option<String>,
-  }
+  use crate::config;
+  use crate::TryIntoDynErr;
+  use std::error::Error;
+  use derive_new::new;
+  config!(
+    (EnvTestConfigurationItem String)
+  );
 
-  impl ConfigurationItem for TestConfigurationItem {
-    fn get_name(&self) -> &str {
-      "TestConfigurationItem"
-    }
+  // struct EnvTestConfigurationItem {
+  //   value: Option<String>,
+  // }
 
-    fn get_group(&self) -> Option<&str> {
-      None
-    }
+  // impl ConfigurationItem for EnvTestConfigurationItem {
+  //   fn get_name(&self) -> &str {
+  //     "EnvTestConfigurationItem"
+  //   }
 
-    fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn std::error::Error>> {
-      if let Some(x) = value.downcast_ref::<String>() {
-        self.value = Some(x.clone());
-      }
+  //   fn get_group(&self) -> Option<&str> {
+  //     None
+  //   }
 
-      None
-    }
-  }
+  //   fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn std::error::Error>> {
+  //     if let Some(x) = value.downcast_ref::<Box<String>>() {
+  //       self.value = Some(x.deref().clone());
+  //     }
+
+  //     None
+  //   }
+  // }
 
   #[test]
   fn try_get() {
-    let env = Environment::new("APPNAME".into(), vec![("APPNAME_TEST_CONFIGURATION_ITEM".into(), Ok("test_value".into()))]);
-    let mut ci = TestConfigurationItem { value: None };
+    let env = Environment::new("APPNAME".into(), vec![("APPNAME_ENV_TEST_CONFIGURATION_ITEM".into(), Ok("test_value".into()))]);
+    let mut ci: EnvTestConfigurationItem = EnvTestConfigurationItem(None);
     let res = env.try_get(&mut ci);
     assert!(res.is_none());
-    assert_eq!(ci.value, Some("test_value".into()));
+    assert_eq!(
+      ci.get(),
+      Some(&String::from("test_value"))
+    );
   }
 }
 

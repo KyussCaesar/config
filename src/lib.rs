@@ -8,18 +8,57 @@ use std::ops::Deref;
 use std::ops::DerefMut;
 use std::sync::RwLock;
 use std::sync::RwLockWriteGuard;
+use std::convert::TryInto;
 use std::convert::TryFrom;
+use std::str::FromStr;
+use std::fmt::Debug;
 
 use auto_impl::auto_impl;
 use derive_new::new;
 use impls::impls;
 
-// #[derive(thiserror::Error)]
-// struct TypeError;
+/// Basically the same as `TryInto`, but the result is behind a trait object.
+pub trait TryIntoDynErr<T> {
+  fn try_into_dyn_err(&self) -> Result<T, Box<dyn Error>>;
+}
 
+impl<B, E> TryIntoDynErr<B> for String
+where
+  B: FromStr<Err=E>,
+  E: Error + 'static,
+{
+  fn try_into_dyn_err(&self) -> Result<B, Box<dyn Error>> {
+    match B::from_str(self) {
+      Ok(b) => Ok(b),
+      Err(e) => Err(Box::new(e)),
+    }
+  }
+}
+
+trait ITryGet {
+  pub fn try_convert(&self, thing: Thing) -> Option<Thing> {
+  }
+   
+  // and then auto impl this for a bunch of things
+}
+
+// http://idubrov.name/rust/2018/06/16/dynamic-casting-traits.html
+// https://github.com/Diggsey/query_interface
+// https://www.osohq.com/post/rust-reflection-pt-1
+// https://crates.io/crates/downcast-rs
+// https://crates.io/crates/mopa
+// https://bennetthardwick.com/rust/downcast-trait-object/
+// https://users.rust-lang.org/t/downcast-to-box-trait/4331/2
+
+#[derive(Debug, derive_more::Display)]
+struct ValueNotHandled;
+
+impl Error for ValueNotHandled {}
+
+#[macro_export]
 macro_rules! config {
   ($name:ident, $type:ty) => {
-    #[derive(new)]
+    #[derive(new, Debug)]
     pub struct $name(Option<$type>);
 
     impl $name {
@@ -38,24 +77,23 @@ macro_rules! config {
       }
 
       fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>> {
-        if let Some(x) = value.downcast_ref::<$type>() {
-          self.0 = Some(x.clone());
+        if let Some(x) = value.downcast_ref::<Box<$type>>() {
+          self.0 = Some(x.deref().clone());
           return None;
         }
 
-        if let Some(x) = value.downcast_ref::<String>() {
-          if impls!($type: TryFrom<String>) {
-            match <$type>::try_from(x) {
-              Ok(val) => {
-                self.0 = Some(val);
-                return None;
-              }
-              Err(e) => return Some(Box::new(e)),
+        // this doesn't work :(
+        if let Some(x) = value.downcast_ref::<Box<dyn TryIntoDynErr<$type>>>() {
+          match x.try_into_dyn_err() {
+            Ok(val) => {
+              self.0 = Some(val);
+              return None;
             }
+            Err(e) => return Some(e),
           }
         }
 
-        None
+        Some(Box::new(crate::ValueNotHandled {}))
       }
     }
   };
@@ -65,7 +103,7 @@ macro_rules! config {
 }
 
 /// Represents an item in your configuration.
-pub trait ConfigurationItem {
+pub trait ConfigurationItem: Debug {
   /// Return the name of the configuration item in `PascalCase`.
   fn get_name(&self) -> &str;
 
@@ -80,20 +118,18 @@ pub trait ConfigurationItem {
 
 impl<'b> ConfigurationItem for RwLockWriteGuard<'_, &mut (dyn ConfigurationItem + 'b)> {
   fn get_name(&self) -> &str { self.deref().get_name() }
-
   fn get_group(&self) -> Option<&str> { self.deref().get_group() }
-
   fn try_value(&mut self, value: &dyn Any) -> Option<Box<dyn Error>> { self.deref_mut().try_value(value) }
 }
 
 #[auto_impl(&)]
-pub trait ConfigurationValueSource {
+pub trait ConfigurationValueSource: Debug {
   /// Attempt to retrieve a value for the specified configuration item from this source.
   fn try_get<'c, 's: 'c>(&'s self, ci: &'c mut dyn ConfigurationItem) -> Option<Box<dyn Error>>;
 }
 
 /// Represents an attempt to get a `T` from the `ConfigurationValueSource`.
-#[derive(new)]
+#[derive(new, Debug)]
 pub struct Attempt<'b> {
   // the source we tried to get the value from
   source: &'b dyn ConfigurationValueSource,
@@ -109,7 +145,7 @@ impl<'a> Attempt<'a> {
 }
 
 /// Represents a series of attempts to get a `T` from various `ConfigurationValueSource`s.
-#[derive(new)]
+#[derive(new, Debug)]
 pub struct Attempts<'a, 'b> {
   // the item we tried to get the value for
   item: &'a dyn ConfigurationItem,
@@ -167,6 +203,31 @@ mod test {
     (TestConfigurationItem String)
   );
 
+  #[test]
+  fn tci_string() {
+    let env = crate::environment::Environment::new("APPNAME".into(), vec![("APPNAME_TEST_CONFIGURATION_ITEM".into(), Ok("test_value".into()))]);
+    let sources: Vec<&dyn ConfigurationValueSource> = vec![&env];
+    let strategy = ConfigurationStrategy::new(sources);
+    let mut ci = TestConfigurationItem::new(None);
+    let res = strategy.try_get(&mut ci);
+    assert_eq!(Some(&String::from("test_value")), ci.get());
+  }
+
+  config!(
+    (MyThreshold f64)
+  );
+
+  #[test]
+  fn tci_double() {
+    let env = crate::environment::Environment::new("APPNAME".into(), vec![("APPNAME_MY_THRESHOLD".into(), Ok("43.1".into()))]);
+    let sources: Vec<&dyn ConfigurationValueSource> = vec![&env];
+    let strategy = ConfigurationStrategy::new(sources);
+    let mut ci = MyThreshold::new(None);
+    let res = strategy.try_get(&mut ci);
+    println!("{:?}", res);
+    assert_eq!(Some(&43.1f64), ci.get());
+  }
+
   // struct TestConfigurationItem {
   //   value: Option<String>,
   // }
@@ -189,14 +250,5 @@ mod test {
   //   }
   // }
 
-  #[test]
-  fn it() {
-    let env = crate::environment::Environment::new("APPNAME".into(), vec![("APPNAME_TEST_CONFIGURATION_ITEM".into(), Ok("test_value".into()))]);
-    let sources: Vec<&dyn ConfigurationValueSource> = vec![&env];
-    let strategy = ConfigurationStrategy::new(sources);
-    let mut ci = TestConfigurationItem::new(None);
-    let res = strategy.try_get(&mut ci);
-    assert_eq!(ci.get(), Some(&String::from("test_value")));
-  }
 }
 
